@@ -37,11 +37,19 @@ All services must expose a health endpoint returning:
   "service": "my-service",
   "environment": "dev",
   "status": "ok",
+  "ok": true,
+  "db_ok": true,
   "git_sha": "abc123def456789012345678901234567890abcd",
   "commit": "abc123def456",
   "release_tag": "v1.2.3"
 }
 ```
+
+**Required fields for verification:**
+- `git_sha`: Full 40-character hex SHA (or "unknown")
+- `commit`: Short 12-character SHA
+- `ok` or `status`: Must be `true` or `"ok"` for deployment to pass
+- `db_ok`: Must be `true` (defaults to true if not present)
 
 ### Required Secrets
 
@@ -68,6 +76,60 @@ All services must expose a health endpoint returning:
 
 - `deploy-v1`: Current stable version
 - Future breaking changes will be `deploy-v2`, etc.
+
+## Tag Protection (Required Setup)
+
+### In this repo (`.github`)
+
+Protect `deploy-v*` tags to prevent accidental deletion/retagging:
+
+```bash
+# Create ruleset via GitHub UI:
+# Settings → Rules → Rulesets → New ruleset
+# - Name: "Protect deploy versions"
+# - Target: Tags matching "deploy-v*"
+# - Rules: Restrict deletions, Restrict updates
+```
+
+### In service repos (parser, accounting-db, etc.)
+
+Protect `v*` release tags with bot bypass for release-please:
+
+```bash
+# Settings → Rules → Rulesets → New ruleset
+# - Name: "Protect release tags"
+# - Target: Tags matching "v*"
+# - Rules: Restrict deletions, Restrict updates
+# - Bypass: Add the PAT identity used by RELEASE_PLEASE_TOKEN
+```
+
+## Pre-First-Deploy Checklist
+
+Before deploying a new service for the first time:
+
+1. **Create Railway service** in platform project (dev, staging, production environments)
+
+2. **Generate Railway tokens** - one per environment, scoped appropriately
+
+3. **Create GitHub environments** (plain names, no URL encoding needed):
+   ```bash
+   gh api -X PUT repos/roni-ai-superapp/{service}/environments/dev
+   gh api -X PUT repos/roni-ai-superapp/{service}/environments/staging
+   gh api -X PUT repos/roni-ai-superapp/{service}/environments/production
+   ```
+
+4. **Configure production environment protection** (required reviewers) BEFORE first run
+
+5. **Set GitHub secrets**:
+   - Repository: `RAILWAY_PROJECT_ID`, `RELEASE_PLEASE_TOKEN`
+   - Per-environment: `RAILWAY_TOKEN`
+
+6. **Set Railway environment variables**:
+   - `RAILWAY_ENVIRONMENT_NAME`: dev/staging/production
+
+7. **Add tag protection rules** (see above)
+
+8. **Update service health endpoint** to return deploy-v1 contract fields
 
 ## Composite Actions
 
