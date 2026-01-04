@@ -1,0 +1,298 @@
+# railway-deploy.yml - deploy-v1 reusable workflow
+# Version: deploy-v1
+#
+# Locked invariants (do not change without bumping to deploy-v2):
+# 1. Health contract: { service, environment, status, git_sha (40-char), commit (12-char), release_tag }
+# 2. Environment secrets: RAILWAY_TOKEN per environment, RAILWAY_PROJECT_ID at repo level
+# 3. Verification: git_sha[:12] must match expected commit
+# 4. Railway CLI version: pinned at 4.11.0
+
+name: Railway Deploy
+
+on:
+  workflow_call:
+    inputs:
+      railway_service:
+        description: Service name in Railway
+        required: true
+        type: string
+      railway_environment:
+        description: Railway environment name (dev, staging, production)
+        required: true
+        type: string
+      github_environment:
+        description: GitHub environment name for secrets (dev, staging, production)
+        required: true
+        type: string
+      service_url:
+        description: Public URL for health checks
+        required: true
+        type: string
+      health_path:
+        description: Health endpoint path
+        required: false
+        type: string
+        default: "/"
+      commit_sha:
+        description: Full 40-char commit SHA to deploy
+        required: true
+        type: string
+      release_tag:
+        description: Release tag (for production deploys)
+        required: false
+        type: string
+        default: ""
+      timeout_seconds:
+        description: Verification timeout in seconds
+        required: false
+        type: number
+        default: 600
+      railway_cli_version:
+        description: Railway CLI version (pinned)
+        required: false
+        type: string
+        default: "4.11.0"
+
+jobs:
+  preflight:
+    name: Preflight Checks
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
+    outputs:
+      sha_short: ${{ steps.sha.outputs.short }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+
+      - name: Calculate short SHA
+        id: sha
+        run: |
+          FULL="${{ inputs.commit_sha }}"
+          echo "short=${FULL:0:12}" >> $GITHUB_OUTPUT
+          echo "Deploying commit: ${FULL:0:12}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Railway Setup
+        uses: roni-ai-superapp/.github/.github/actions/railway-setup@deploy-v1
+        with:
+          cli_version: ${{ inputs.railway_cli_version }}
+          project_id: ${{ secrets.RAILWAY_PROJECT_ID }}
+
+      - name: Validate Railway environment exists
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set +x
+          export PS4=''
+
+          echo "Checking Railway environment '${{ inputs.railway_environment }}' exists..."
+
+          # List environments to verify access
+          ENV_LIST=$(railway environment list 2>&1 || echo "ERROR")
+          if echo "$ENV_LIST" | grep -q "ERROR\|error\|Error"; then
+            echo "::error::Failed to list Railway environments. Check RAILWAY_TOKEN permissions."
+            exit 1
+          fi
+
+          if ! echo "$ENV_LIST" | grep -qw "${{ inputs.railway_environment }}"; then
+            echo "::error::Railway environment '${{ inputs.railway_environment }}' not found."
+            echo "Available environments:"
+            echo "$ENV_LIST"
+            exit 1
+          fi
+
+          echo "Railway environment validated."
+
+  deploy:
+    name: Deploy to ${{ inputs.railway_environment }}
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.github_environment }}
+      url: ${{ inputs.service_url }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Railway Setup
+        uses: roni-ai-superapp/.github/.github/actions/railway-setup@deploy-v1
+        with:
+          cli_version: ${{ inputs.railway_cli_version }}
+          project_id: ${{ secrets.RAILWAY_PROJECT_ID }}
+
+      - name: Set deploy variables
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set +x
+          export PS4=''
+
+          echo "Setting COMMIT_SHA=${{ inputs.commit_sha }}"
+
+          railway variables \
+            --service "${{ inputs.railway_service }}" \
+            --environment "${{ inputs.railway_environment }}" \
+            --set "COMMIT_SHA=${{ inputs.commit_sha }}" \
+            --skip-deploys
+
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            echo "Setting RELEASE_TAG=${{ inputs.release_tag }}"
+            railway variables \
+              --service "${{ inputs.railway_service }}" \
+              --environment "${{ inputs.railway_environment }}" \
+              --set "RELEASE_TAG=${{ inputs.release_tag }}" \
+              --skip-deploys
+          fi
+
+      - name: Deploy to Railway
+        id: deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set +x
+          export PS4=''
+
+          echo "Deploying commit ${{ needs.preflight.outputs.sha_short }} to ${{ inputs.railway_environment }}..."
+
+          OUTPUT=$(railway up \
+            --service "${{ inputs.railway_service }}" \
+            --environment "${{ inputs.railway_environment }}" \
+            --ci 2>&1) || true
+
+          # Don't print full output (may contain sensitive info)
+          if echo "$OUTPUT" | grep -q "error\|Error\|ERROR"; then
+            echo "::error::Railway deploy failed"
+            echo "$OUTPUT" | grep -i "error" | head -5
+            exit 1
+          fi
+
+          if echo "$OUTPUT" | grep -q "No changed files"; then
+            echo "No code changes, forcing redeploy..."
+            echo "needs_redeploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "Deploy initiated"
+            echo "needs_redeploy=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Force redeploy if needed
+        if: steps.deploy.outputs.needs_redeploy == 'true'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set +x
+          export PS4=''
+
+          railway environment "${{ inputs.railway_environment }}"
+          railway redeploy --service "${{ inputs.railway_service }}" --yes
+
+  verify:
+    name: Verify Deployment
+    needs: [preflight, deploy]
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
+
+    steps:
+      - name: Install jq
+        run: |
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+
+      - name: Wait for initial deployment
+        run: |
+          echo "Waiting 30s for deployment to start..."
+          sleep 30
+
+      - name: Verify deployment via health endpoint
+        id: verify
+        run: |
+          set -euo pipefail
+
+          EXPECTED="${{ needs.preflight.outputs.sha_short }}"
+          EXPECTED_TAG="${{ inputs.release_tag }}"
+          BASE_URL="${{ inputs.service_url }}"
+          HEALTH_PATH="${{ inputs.health_path }}"
+          TIMEOUT=${{ inputs.timeout_seconds }}
+          INTERVAL=10
+          END=$(($(date +%s) + TIMEOUT))
+
+          echo "Verifying commit ${EXPECTED} at ${BASE_URL}${HEALTH_PATH}..."
+          if [ -n "$EXPECTED_TAG" ]; then
+            echo "Expected release_tag: ${EXPECTED_TAG}"
+          fi
+
+          while true; do
+            BODY=$(curl -fsS "${BASE_URL}${HEALTH_PATH}" 2>/dev/null || echo '{"status":"error"}')
+
+            # Extract fields (deploy-v1 health contract)
+            STATUS=$(echo "$BODY" | jq -r '.status // "error"')
+            GIT_SHA=$(echo "$BODY" | jq -r '.git_sha // .commit // "none"')
+            DEPLOYED_TAG=$(echo "$BODY" | jq -r '.release_tag // "none"')
+            SERVICE=$(echo "$BODY" | jq -r '.service // "unknown"')
+            ENV=$(echo "$BODY" | jq -r '.environment // "unknown"')
+
+            # Print safe subset only (no full body which may leak secrets)
+            echo "status=${STATUS}, service=${SERVICE}, environment=${ENV}, deployed=${GIT_SHA:0:12}, expected=${EXPECTED}"
+
+            if [ "${GIT_SHA:0:12}" = "$EXPECTED" ]; then
+              # SHA matches, check tag if required
+              if [ -n "$EXPECTED_TAG" ]; then
+                if [ "$DEPLOYED_TAG" = "$EXPECTED_TAG" ]; then
+                  echo "Deployment verified! SHA and tag match."
+                  echo "verified=true" >> $GITHUB_OUTPUT
+                  exit 0
+                elif [ "$DEPLOYED_TAG" = "none" ] || [ "$DEPLOYED_TAG" = "null" ]; then
+                  echo "SHA matches but release_tag not yet propagated..."
+                else
+                  echo "::error::Tag mismatch: got ${DEPLOYED_TAG}, expected ${EXPECTED_TAG}"
+                  exit 1
+                fi
+              else
+                echo "Deployment verified! SHA matches."
+                echo "verified=true" >> $GITHUB_OUTPUT
+                exit 0
+              fi
+            fi
+
+            if [ $(date +%s) -gt $END ]; then
+              echo "::error::Timeout waiting for deployment verification"
+              echo "Expected SHA: ${EXPECTED}"
+              echo "Got SHA: ${GIT_SHA:0:12}"
+              echo "verified=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+
+            sleep $INTERVAL
+          done
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | \`${{ inputs.railway_service }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ inputs.railway_environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ needs.preflight.outputs.sha_short }}\` |" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            echo "| Tag | \`${{ inputs.release_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "| URL | ${{ inputs.service_url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Verified | ${{ steps.verify.outputs.verified || 'unknown' }} |" >> $GITHUB_STEP_SUMMARY

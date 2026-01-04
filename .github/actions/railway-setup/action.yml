@@ -1,0 +1,28 @@
+name: Railway Setup
+description: Install Railway CLI and configure project
+
+inputs:
+  cli_version:
+    description: Railway CLI version (pinned for reproducibility)
+    required: false
+    default: "4.11.0"
+  project_id:
+    description: Railway project ID
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Railway CLI
+      shell: bash
+      run: npm install -g @railway/cli@${{ inputs.cli_version }}
+
+    - name: Configure Railway project
+      shell: bash
+      run: |
+        mkdir -p .railway
+        echo '{"projectId":"${{ inputs.project_id }}"}' > .railway/config.json
+
+    - name: Verify CLI installation
+      shell: bash
+      run: railway --version
