@@ -254,9 +254,21 @@ jobs:
               # SHA matches, check tag if required
               if [ -n "$EXPECTED_TAG" ]; then
                 if [ "$DEPLOYED_TAG" = "$EXPECTED_TAG" ]; then
-                  echo "Deployment verified! SHA and tag match."
-                  echo "verified=true" >> $GITHUB_OUTPUT
-                  exit 0
+                  # SHA and tag match - now verify service health
+                  OK=$(echo "$BODY" | jq -r '.ok // .status' | tr '[:upper:]' '[:lower:]')
+                  DB_OK=$(echo "$BODY" | jq -r '.db_ok // "true"' | tr '[:upper:]' '[:lower:]')
+
+                  if [ "$OK" = "true" ] || [ "$OK" = "ok" ]; then
+                    if [ "$DB_OK" = "true" ]; then
+                      echo "Deployment verified! SHA, tag, and health checks pass."
+                      echo "verified=true" >> $GITHUB_OUTPUT
+                      exit 0
+                    else
+                      echo "::warning::SHA and tag match but db_ok=false, continuing to wait..."
+                    fi
+                  else
+                    echo "::warning::SHA and tag match but ok=${OK}, continuing to wait..."
+                  fi
                 elif [ "$DEPLOYED_TAG" = "none" ] || [ "$DEPLOYED_TAG" = "null" ]; then
                   echo "SHA matches but release_tag not yet propagated..."
                 else
@@ -264,9 +276,21 @@ jobs:
                   exit 1
                 fi
               else
-                echo "Deployment verified! SHA matches."
-                echo "verified=true" >> $GITHUB_OUTPUT
-                exit 0
+                # No tag required - verify service health
+                OK=$(echo "$BODY" | jq -r '.ok // .status' | tr '[:upper:]' '[:lower:]')
+                DB_OK=$(echo "$BODY" | jq -r '.db_ok // "true"' | tr '[:upper:]' '[:lower:]')
+
+                if [ "$OK" = "true" ] || [ "$OK" = "ok" ]; then
+                  if [ "$DB_OK" = "true" ]; then
+                    echo "Deployment verified! SHA and health checks pass."
+                    echo "verified=true" >> $GITHUB_OUTPUT
+                    exit 0
+                  else
+                    echo "::warning::SHA matches but db_ok=false, continuing to wait..."
+                  fi
+                else
+                  echo "::warning::SHA matches but ok=${OK}, continuing to wait..."
+                fi
               fi
             fi
 
