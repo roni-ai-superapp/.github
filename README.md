@@ -18,7 +18,7 @@ on:
 
 jobs:
   deploy:
-    uses: roni-ai-superapp/.github/.github/workflows/railway-deploy.yml@deploy-v1
+    uses: roni-ai-superapp/.github/.github/workflows/railway-deploy.yml@deploy-v1.1
     with:
       railway_service: my-service
       railway_environment: dev
@@ -138,7 +138,7 @@ Before deploying a new service for the first time:
 Shared action for Railway CLI installation and project configuration.
 
 ```yaml
-- uses: roni-ai-superapp/.github/.github/actions/railway-setup@deploy-v1
+- uses: roni-ai-superapp/.github/.github/actions/railway-setup@deploy-v1.1
   with:
     cli_version: "4.11.0"
     project_id: ${{ secrets.RAILWAY_PROJECT_ID }}

@@ -1,5 +1,5 @@
-# railway-deploy.yml - deploy-v1 reusable workflow
-# Version: deploy-v1
+# railway-deploy.yml - deploy-v1.1 reusable workflow
+# Version: deploy-v1.1
 #
 # Locked invariants (do not change without bumping to deploy-v2):
 # 1. Health contract: { service, environment, status, git_sha (40-char), commit (12-char), release_tag }
@@ -80,7 +80,7 @@ jobs:
           node-version: 20
 
       - name: Railway Setup
-        uses: roni-ai-superapp/.github/.github/actions/railway-setup@deploy-v1
+        uses: roni-ai-superapp/.github/.github/actions/railway-setup@deploy-v1.1
         with:
           cli_version: ${{ inputs.railway_cli_version }}
           project_id: ${{ secrets.RAILWAY_PROJECT_ID }}
@@ -131,7 +131,7 @@ jobs:
           node-version: 20
 
       - name: Railway Setup
-        uses: roni-ai-superapp/.github/.github/actions/railway-setup@deploy-v1
+        uses: roni-ai-superapp/.github/.github/actions/railway-setup@deploy-v1.1
         with:
           cli_version: ${{ inputs.railway_cli_version }}
           project_id: ${{ secrets.RAILWAY_PROJECT_ID }}
